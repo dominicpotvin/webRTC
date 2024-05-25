@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Client WebRTC</title>
+    <script src="https://cdn.socket.io/4.0.1/socket.io.min.js"></script>
+</head>
+<body>
+    <h2>Connexion WebRTC (Client)</h2>
+    <div>
+        <video id="localVideo" autoplay muted></video>
+        <video id="remoteVideo" autoplay></video>
+    </div>
+    <button id="connectRTCBtn">Connexion RTC</button>
+    <button id="disconnectRTCBtn" disabled>Déconnexion RTC</button>
+
+    <script>
+        var localStream;
+        var peerConnection;
+        var remoteStream = new MediaStream();
+        const signalingSocket = io('http://192.168.2.38:3000'); // Adresse du serveur de signalisation
+
+        async function startLocalStream() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                document.getElementById('localVideo').srcObject = localStream;
+            } catch (error) {
+                console.error('Error accessing media devices.', error);
+            }
+        }
+
+        function createPeerConnection() {
+            peerConnection = new RTCPeerConnection({
+                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            });
+
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    signalingSocket.emit('signal', { candidate: event.candidate });
+                }
+            };
+
+            peerConnection.ontrack = (event) => {
+                remoteStream.addTrack(event.track);
+                document.getElementById('remoteVideo').srcObject = remoteStream;
+            };
+
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+        }
+
+        document.getElementById('connectRTCBtn').addEventListener('click', async function () {
+            await startLocalStream();
+            createPeerConnection();
+
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            signalingSocket.emit('signal', { offer: peerConnection.localDescription });
+
+            document.getElementById('disconnectRTCBtn').disabled = false;
+            document.getElementById('connectRTCBtn').disabled = true;
+        });
+
+        document.getElementById('disconnectRTCBtn').addEventListener('click', function () {
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+                document.getElementById('remoteVideo').srcObject = null;
+                document.getElementById('localVideo').srcObject = null;
+                document.getElementById('disconnectRTCBtn').disabled = true;
+                document.getElementById('connectRTCBtn').disabled = false;
+            }
+        });
+
+        // Gérer les signaux WebRTC reçus
+        signalingSocket.on('signal', async (data) => {
+            if (data.offer) {
+                if (!peerConnection) createPeerConnection();
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                signalingSocket.emit('signal', { answer: peerConnection.localDescription });
+            } else if (data.answer) {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+            } else if (data.candidate) {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+            }
+        });
+    </script>
+</body>
+</html>
